@@ -1,3 +1,3 @@
-[submodule "NBT"]
-	path = NBT
+[submodule "nbt"]
+	path = nbt
 	url = https://github.com/twoolie/NBT
