@@ -1,1 +1,4 @@
 *.pyc
+
+# Script output file
+output.txt
