@@ -7,6 +7,8 @@ from pathlib import Path
 import json
 import urllib.request
 
+cached_player_names = {}
+
 def get_name(item):
     if 'tag' not in item:
         return None
@@ -24,12 +26,15 @@ def get_name(item):
 
     return name['text']
 
-def is_important(item):
+def is_important_item(item):
     if 'id' not in item:
         return False
 
     id = item['id'].value
     name = get_name(item)
+
+    if name is not None:
+        return True
 
     keywords = ['netherite', 'ancient_debris', 'shulk']
 
@@ -37,10 +42,53 @@ def is_important(item):
         if keyword in id:
             return True
 
-    if name is not None:
-        return True
-
     return False
+
+def get_important_chunk_items(chunk):
+    INVENTORY_NAMES = ['Items', 'ArmorItems', 'HandItems']
+
+    level = chunk['Level']
+    entities = level['Entities']
+    tile_entities = level['TileEntities']
+
+    if len(entities) == 0 and len(tile_entities) == 0:
+        return []
+
+    position_item = []
+
+    # Check entity items
+    for entity in entities:
+        pos = tuple([x.value for x in entity['Pos']])
+
+        # Check for items in multiple inventories, namely:
+        # 'Items' for minecarts, llamas/horses/donkeys/mules/etc
+        # 'ArmorItems' for armor stands, zombies/skeletons/etc
+        # 'HandItems' for armor stands, zombies/skeletons/etc
+        for inventory_name in INVENTORY_NAMES:
+            if inventory_name in entity:
+                for item in entity[inventory_name]:
+                    if is_important_item(item):
+                        position_item.append((pos, item))
+
+        # Item frames hold one item as 'Item'
+        if 'Item' in entity and is_important_item(entity['Item']):
+            position_item.append((pos, entity['Item']))
+
+    # Check tile entity items
+    for tile_entity in tile_entities:
+        if not 'Items' in tile_entity:
+            continue
+
+        x = tile_entity['x'].value
+        y = tile_entity['y'].value
+        z = tile_entity['z'].value
+        pos = (x, y, z)
+
+        for item in tile_entity['Items']:
+            if is_important_item(item):
+                position_item.append((pos, item))
+
+    return position_item
 
 def search_players(playerdata_dir):
     player_inventory = {}
@@ -53,82 +101,22 @@ def search_players(playerdata_dir):
         if 'bukkit' in nbtfile and 'lastKnownName' in nbtfile['bukkit']:
             player_name = nbtfile['bukkit']['lastKnownName']
 
+            uuid = playerdata_path.with_suffix('').name
+            cached_player_names[uuid] = player_name
+
         player_matches = []
 
         for inventory_type in ['Inventory', 'EnderItems']:
             inventory = nbtfile[inventory_type]
 
             for item in inventory:
-                if is_important(item):
+                if is_important_item(item):
                     player_matches.append(item)
 
         if len(player_matches) > 0:
             player_inventory[player_name] = player_matches
 
     return player_inventory
-
-def search_world(world_dir):
-    if not world_dir.exists():
-        print(f"World at {str(world_dir)} does not exist")
-
-        return
-
-    print(f"Searching world at {str(world_dir)}")
-
-    world = nbt.world.WorldFolder(world_dir)
-
-    position_item = []
-
-    inventory_names = ['Items', 'ArmorItems', 'HandItems']
-
-    region_iter = tqdm(world.iter_regions(), total=len(world.get_regionfiles()),
-        desc="Getting regions", leave=False)
-
-    regions = [x for x in region_iter]
-
-    for region in regions:
-        chunk_count = len(region.get_metadata())
-        chunk_iter = region.iter_chunks()
-
-        if chunk_count > 100:
-            chunk_iter = tqdm(chunk_iter, total=chunk_count, leave=False)
-
-        for chunk in chunk_iter:
-            level = chunk['Level']
-
-            # Check entity items
-            for entity in level['Entities']:
-                pos = tuple([x.value for x in entity['Pos']])
-
-                # Check for items in multiple inventories, namely:
-                # 'Items' for minecarts, llamas/horses/donkeys/mules/etc
-                # 'ArmorItems' for armor stands, zombies/skeletons/etc
-                # 'HandItems' for armor stands, zombies/skeletons/etc
-                for inventory_name in inventory_names:
-                    if inventory_name in entity:
-                        for item in entity[inventory_name]:
-                            if is_important(item):
-                                position_item.append((pos, item))
-
-                # Item frames hold one item as 'Item'
-                if 'Item' in entity and is_important(entity['Item']):
-                    position_item.append((pos, entity['Item']))
-
-            # Check tile entity items
-            for tile_entity in level['TileEntities']:
-                if not 'Items' in tile_entity:
-                    continue
-
-                x = tile_entity['x'].value
-                y = tile_entity['y'].value
-                z = tile_entity['z'].value
-                pos = (x, y, z)
-
-                for item in tile_entity['Items']:
-                    if is_important(item):
-                        position_item.append((pos, item))
-
-    return position_item
 
 def search_stats(stats_dir):
     player_debris_mined = []
@@ -152,19 +140,57 @@ def search_stats(stats_dir):
         mined_count = mined['minecraft:ancient_debris']
 
         uuid = file.with_suffix('').name
-        url = urllib.request.urlopen(f"https://api.mojang.com/user/profiles/{uuid}/names")
-        contents = json.loads(url.read().decode("utf-8"))
-        name = contents[-1]['name']
+
+        name = cached_player_names.get(uuid, None)
+
+        if name is None:
+            url = urllib.request.urlopen(f"https://api.mojang.com/user/profiles/{uuid}/names")
+            contents = json.loads(url.read().decode("utf-8"))
+            name = contents[-1]['name']
 
         player_debris_mined.append((name, mined_count))
 
     return player_debris_mined
 
+def search_world(world_dir):
+    if not world_dir.exists():
+        print(f"World at {str(world_dir)} does not exist")
+
+        return
+
+    print(f"Searching world at {str(world_dir)}")
+
+    try:
+        world = nbt.world.WorldFolder(world_dir)
+    except Exception as e:
+        print(f"Failed to open world at {str(world_dir)}")
+
+        return
+
+    position_item = []
+
+    progress_bar = tqdm(world.iter_regions(),
+        total=len(world.get_regionfiles()))
+
+    for region in progress_bar:
+        progress_bar.set_description(f"Region {region.loc.x}, {region.loc.z}")
+
+        chunk_count = len(region.get_metadata())
+        chunk_iter = region.iter_chunks()
+
+        if chunk_count > 1024:
+            chunk_iter = tqdm(chunk_iter, total=chunk_count, leave=False)
+
+        for chunk in chunk_iter:
+            position_item += get_important_chunk_items(chunk)
+
+    return position_item
+
 def main():
-    saves_dir = Path("C:/Users/alext/AppData/Roaming/.minecraft/saves/")
-    world_dir = saves_dir / "./2021-03-15/"
-    nether_dir = world_dir / "./DIM-1/"
-    end_dir = world_dir / "./DIM1/"
+    saves_dir = Path.home() / Path("AppData/Roaming/.minecraft/saves/")
+    world_dir = saves_dir / "2021-03-17 - culled/"
+    nether_dir = world_dir / "DIM-1/"
+    end_dir = world_dir / "DIM1/"
 
     playerdata_dir = world_dir / "./playerdata/"
     stats_dir = world_dir / "./stats/"
@@ -175,17 +201,17 @@ def main():
 
             return
 
-    dimension_position_item = {
-        "overworld": search_world(world_dir),
-        "nether": search_world(nether_dir),
-        "end": search_world(end_dir)
-    }
+    dimension_position_item = [
+        ("overworld", search_world(world_dir)),
+        ("nether", search_world(nether_dir)),
+        ("end", search_world(end_dir))
+    ]
     player_inventory = search_players(playerdata_dir)
     player_debris_mined = search_stats(stats_dir)
 
     output = []
 
-    for dimension, position_item in dimension_position_item.items():
+    for dimension, position_item in dimension_position_item:
         output.append(dimension)
 
         for position, item in position_item:
