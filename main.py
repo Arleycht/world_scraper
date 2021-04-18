@@ -188,7 +188,7 @@ def search_world(world_dir):
 
 def main():
     saves_dir = Path.home() / Path("AppData/Roaming/.minecraft/saves/")
-    world_dir = saves_dir / "2021-03-17 - culled/"
+    world_dir = saves_dir / "2021-04-12/"
     nether_dir = world_dir / "DIM-1/"
     end_dir = world_dir / "DIM1/"
 
@@ -247,8 +247,10 @@ def main():
     for player, debris_mined in player_debris_mined:
         output.append(f"{player} mined {debris_mined} debris")
 
-    with open("output.txt", "w") as f:
-        f.write('\n'.join([str(x) for x in output]))
+    with open("output.txt", "wb") as f:
+        s = '\n'.join([str(x) for x in output])
+
+        f.write(s.encode("utf8"))
 
 if __name__ == "__main__":
     main()
